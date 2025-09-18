@@ -1,0 +1,98 @@
+import os
+import requests
+import smtplib
+from deepface import DeepFace
+from email.message import EmailMessage
+
+# --- Configuration ---
+ESP32_CAM_URL = "http://192.168.36.87/latest.jpg"  # Update with your ESP32 IP
+KNOWN_FACES_DIR = "known_faces"
+INTRUDER_IMG = "intruder.jpg"
+
+EMAIL_SENDER = "shreeshiva182@gmail.com"
+EMAIL_RECEIVER = "shreeshivamn04@gmail.com"
+EMAIL_PASSWORD = "SSSMMMNNN18@@@"  # Replace with Gmail App Password
+
+# --- Capture intruder image from ESP32-CAM ---
+def capture_intruder_image(retries=3):
+    for attempt in range(retries):
+        try:
+            response = requests.get(ESP32_CAM_URL, timeout=5)
+            if response.status_code == 200 and response.headers.get("Content-Type", "").startswith("image/"):
+                with open(INTRUDER_IMG, "wb") as f:
+                    f.write(response.content)
+                print("✅ Image saved as intruder.jpg")
+                return True
+            else:
+                print("❌ Invalid response from ESP32-CAM")
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ Attempt {attempt+1}/{retries} failed: {e}")
+    return False
+
+# --- Send alert email with image attached ---
+def send_alert_email():
+    msg = EmailMessage()
+    msg.set_content("⚠️ Unknown person detected by the camera!")
+    msg["Subject"] = "ALERT: Intruder Detected"
+    msg["From"] = EMAIL_SENDER
+    msg["To"] = EMAIL_RECEIVER
+
+    try:
+        with open(INTRUDER_IMG, "rb") as f:
+            msg.add_attachment(f.read(), maintype="image", subtype="jpeg", filename="intruder.jpg")
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("✅ Email sent successfully.")
+    except Exception as e:
+        print("❌ Failed to send email:", e)
+
+# --- Compare intruder with known faces using DeepFace ---
+def recognize_face():
+    if not os.path.exists(KNOWN_FACES_DIR):
+        print("❌ Known faces directory not found.")
+        return
+
+    best_match = None
+    best_distance = 1.0  # Lower = more similar
+    threshold = 0.3      # Adjust based on model performance
+
+    try:
+        for person in os.listdir(KNOWN_FACES_DIR):
+            person_folder = os.path.join(KNOWN_FACES_DIR, person)
+            if not os.path.isdir(person_folder):
+                continue
+
+            for file in os.listdir(person_folder):
+                if not file.lower().endswith((".jpg", ".jpeg", ".png")):
+                    continue
+
+                known_face_path = os.path.join(person_folder, file)
+                print(f"🔍 Comparing with {known_face_path}...")
+                try:
+                    result = DeepFace.verify(img1_path=INTRUDER_IMG, img2_path=known_face_path, enforce_detection=False)
+                    distance = result.get("distance", 1.0)
+                    print(f"   Distance = {distance:.3f}")
+
+                    if distance < best_distance:
+                        best_distance = distance
+                        best_match = person
+
+                except Exception as e:
+                    print(f"⚠️ DeepFace error with {known_face_path}: {e}")
+
+        if best_match and best_distance < threshold:
+            print(f"✅ Match found! Known person: {best_match} (distance={best_distance:.3f})")
+        else:
+            print("⚠️ No match found — unknown person detected!")
+            send_alert_email()
+
+    except Exception as e:
+        print("❌ Error during face recognition:", e)
+
+# --- Main ---
+if capture_intruder_image():
+    recognize_face()
+else:
+    print("❌ Could not capture image from ESP32-CAM.")
